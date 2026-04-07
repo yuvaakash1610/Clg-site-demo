@@ -1,0 +1,63 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile information",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Firebase Auth UID" },
+        "email": { "type": "string", "format": "email" },
+        "name": { "type": "string" },
+        "role": { "type": "string", "enum": ["teacher", "student"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "name", "role"]
+    },
+    "Question": {
+      "title": "Question",
+      "description": "Assessment question",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "type": { "type": "string", "enum": ["mcq", "short_answer", "python_program"] },
+        "question": { "type": "string" },
+        "marks": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "createdBy": { "type": "string", "description": "Teacher UID" }
+      },
+      "required": ["id", "type", "question", "marks", "createdBy"]
+    },
+    "Submission": {
+      "title": "Submission",
+      "description": "Student submission and grade",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "student_id": { "type": "string", "description": "Student UID" },
+        "student_name": { "type": "string" },
+        "question_id": { "type": "string" },
+        "question_type": { "type": "string" },
+        "answer": { "type": "string" },
+        "marks_awarded": { "type": "number" },
+        "total_marks": { "type": "number" },
+        "feedback": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "student_id", "student_name", "question_id", "answer", "marks_awarded", "total_marks", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/users/{uid}": {
+      "schema": "User",
+      "description": "User profiles"
+    },
+    "/questions/{questionId}": {
+      "schema": "Question",
+      "description": "Assessment questions"
+    },
+    "/submissions/{submissionId}": {
+      "schema": "Submission",
+      "description": "Student submissions"
+    }
+  }
+}

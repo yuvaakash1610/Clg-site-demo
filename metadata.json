@@ -1,0 +1,5 @@
+{
+  "name": "AI Programming Tutor LMS",
+  "description": "A Learning Management System with AI-powered grading for programming courses. Features teacher and student portals with instant feedback on MCQs, short answers, and Python code.",
+  "requestFramePermissions": []
+}

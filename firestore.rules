@@ -1,0 +1,84 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Fields:
+    //   - uid: string (required)
+    //   - email: string (required)
+    //   - name: string (required)
+    //   - role: string (required, 'teacher' or 'student')
+    //
+    // Collection: questions
+    // Fields:
+    //   - id: string (required)
+    //   - type: string (required)
+    //   - question: string (required)
+    //   - marks: number (required)
+    //   - createdBy: string (required)
+    //
+    // Collection: submissions
+    // Fields:
+    //   - student_id: string (required)
+    //   - student_name: string (required)
+    //   - question_id: string (required)
+    //   - marks_awarded: number (required)
+    //   - total_marks: number (required)
+    //
+    // ===============================================================
+
+    // Helper Functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isTeacher() {
+      return isAuthenticated() && (
+        (request.auth.token.email == "yuvaakash16@gmail.com") ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'teacher')
+      );
+    }
+
+    function isStudent() {
+      return isAuthenticated() && getUserData().role == 'student';
+    }
+
+    // Users Collection
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow create: if isOwner(userId) && 
+                    request.resource.data.role in ['teacher', 'student'] &&
+                    request.resource.data.keys().hasAll(['uid', 'email', 'name', 'role']);
+      allow update: if isOwner(userId) && 
+                    request.resource.data.role == resource.data.role; // Role cannot be changed
+    }
+
+    // Questions Collection
+    match /questions/{questionId} {
+      allow read: if isAuthenticated();
+      allow create: if isTeacher();
+      allow update: if isTeacher();
+      allow delete: if isTeacher();
+    }
+
+    // Submissions Collection
+    match /submissions/{submissionId} {
+      allow read: if isTeacher() || (isAuthenticated() && resource.data.student_id == request.auth.uid);
+      allow create: if isStudent() && request.resource.data.student_id == request.auth.uid;
+      allow update: if false; // Submissions are immutable
+      allow delete: if isTeacher();
+    }
+  }
+}
