@@ -4,7 +4,8 @@ import { GradingRequest, GradingResponse } from "../types";
 export type { GradingRequest, GradingResponse };
 
 // Initialize Gemini API
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
+const apiKey = import.meta.env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY || "";
+const ai = new GoogleGenAI({ apiKey });
 
 const SYSTEM_INSTRUCTION = `
 You are an AI teaching assistant embedded inside a Learning Management System (LMS) for a programming course instructor.

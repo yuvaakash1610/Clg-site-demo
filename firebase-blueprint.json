@@ -13,6 +13,21 @@
       },
       "required": ["uid", "email", "name", "role"]
     },
+    "Assignment": {
+      "title": "Assignment",
+      "description": "A collection of questions with a deadline",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "questions": { "type": "array", "items": { "$ref": "Question" } },
+        "deadline": { "type": "string", "format": "date-time" },
+        "createdBy": { "type": "string", "description": "Teacher UID" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "title", "questions", "deadline", "createdBy", "createdAt"]
+    },
     "Question": {
       "title": "Question",
       "description": "Assessment question",
@@ -21,29 +36,25 @@
         "id": { "type": "string" },
         "type": { "type": "string", "enum": ["mcq", "short_answer", "python_program"] },
         "question": { "type": "string" },
-        "marks": { "type": "number" },
-        "createdAt": { "type": "string", "format": "date-time" },
-        "createdBy": { "type": "string", "description": "Teacher UID" }
+        "marks": { "type": "number" }
       },
-      "required": ["id", "type", "question", "marks", "createdBy"]
+      "required": ["id", "type", "question"]
     },
-    "Submission": {
-      "title": "Submission",
-      "description": "Student submission and grade",
+    "AssignmentSubmission": {
+      "title": "AssignmentSubmission",
+      "description": "Student submission for an entire assignment",
       "type": "object",
       "properties": {
         "id": { "type": "string" },
-        "student_id": { "type": "string", "description": "Student UID" },
+        "assignment_id": { "type": "string" },
+        "student_id": { "type": "string" },
         "student_name": { "type": "string" },
-        "question_id": { "type": "string" },
-        "question_type": { "type": "string" },
-        "answer": { "type": "string" },
-        "marks_awarded": { "type": "number" },
-        "total_marks": { "type": "number" },
-        "feedback": { "type": "string" },
+        "answers": { "type": "object", "description": "Map of question_id to answer details" },
+        "total_marks_awarded": { "type": "number" },
+        "total_possible_marks": { "type": "number" },
         "timestamp": { "type": "string", "format": "date-time" }
       },
-      "required": ["id", "student_id", "student_name", "question_id", "answer", "marks_awarded", "total_marks", "timestamp"]
+      "required": ["id", "assignment_id", "student_id", "student_name", "answers", "total_marks_awarded", "total_possible_marks", "timestamp"]
     }
   },
   "firestore": {
@@ -51,13 +62,13 @@
       "schema": "User",
       "description": "User profiles"
     },
-    "/questions/{questionId}": {
-      "schema": "Question",
-      "description": "Assessment questions"
+    "/assignments/{assignmentId}": {
+      "schema": "Assignment",
+      "description": "Assignments created by teachers"
     },
     "/submissions/{submissionId}": {
-      "schema": "Submission",
-      "description": "Student submissions"
+      "schema": "AssignmentSubmission",
+      "description": "Student submissions for assignments"
     }
   }
 }

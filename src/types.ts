@@ -36,13 +36,35 @@ export interface PythonQuestion {
 
 export type Question = MCQQuestion | ShortAnswerQuestion | PythonQuestion;
 
-export interface Submission {
+export interface Assignment {
   id: string;
+  title: string;
+  description: string;
+  questions: Question[];
+  deadline: string;
+  createdBy: string;
+  createdAt: string;
+}
+
+export interface AssignmentSubmission {
+  id: string;
+  assignment_id: string;
   student_id: string;
-  question_id: string;
-  answer: string;
+  student_name: string;
+  rollNumber?: string;
+  answers: {
+    [question_id: string]: {
+      answer: string;
+      marks_awarded: number;
+      feedback: string;
+      total_marks: number;
+      question_type: QuestionType;
+      question_title: string;
+    }
+  };
+  total_marks_awarded: number;
+  total_possible_marks: number;
   timestamp: string;
-  grade?: any;
 }
 
 export interface GradingRequest {

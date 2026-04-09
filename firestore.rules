@@ -12,22 +12,27 @@ service cloud.firestore {
     //   - email: string (required)
     //   - name: string (required)
     //   - role: string (required, 'teacher' or 'student')
+    //   - rollNumber: string (required for students)
     //
-    // Collection: questions
+    // Collection: assignments
     // Fields:
     //   - id: string (required)
-    //   - type: string (required)
-    //   - question: string (required)
-    //   - marks: number (required)
+    //   - title: string (required)
+    //   - description: string
+    //   - questions: array (required)
+    //   - deadline: string (required, ISO 8601)
     //   - createdBy: string (required)
+    //   - createdAt: string (required)
     //
     // Collection: submissions
     // Fields:
+    //   - assignment_id: string (required)
     //   - student_id: string (required)
     //   - student_name: string (required)
-    //   - question_id: string (required)
-    //   - marks_awarded: number (required)
-    //   - total_marks: number (required)
+    //   - answers: map (required)
+    //   - total_marks_awarded: number (required)
+    //   - total_possible_marks: number (required)
+    //   - timestamp: string (required)
     //
     // ===============================================================
 
@@ -46,7 +51,7 @@ service cloud.firestore {
 
     function isTeacher() {
       return isAuthenticated() && (
-        (request.auth.token.email == "yuvaakash16@gmail.com") ||
+        (request.auth.token.email == "yuvaakash16@gmail.com" && request.auth.token.email_verified == true) ||
         (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'teacher')
       );
     }
@@ -60,13 +65,14 @@ service cloud.firestore {
       allow read: if isAuthenticated();
       allow create: if isOwner(userId) && 
                     request.resource.data.role in ['teacher', 'student'] &&
-                    request.resource.data.keys().hasAll(['uid', 'email', 'name', 'role']);
+                    request.resource.data.keys().hasAll(['uid', 'email', 'name', 'role']) &&
+                    (request.resource.data.role == 'teacher' || request.resource.data.rollNumber is string);
       allow update: if isOwner(userId) && 
                     request.resource.data.role == resource.data.role; // Role cannot be changed
     }
 
-    // Questions Collection
-    match /questions/{questionId} {
+    // Assignments Collection
+    match /assignments/{assignmentId} {
       allow read: if isAuthenticated();
       allow create: if isTeacher();
       allow update: if isTeacher();
