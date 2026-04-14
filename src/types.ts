@@ -1,3 +1,14 @@
+export interface User {
+  uid: string;
+  email: string;
+  name: string;
+  role: "teacher" | "student";
+  rollNumber?: string;
+  year?: "1st Year" | "2nd Year";
+  section?: string;
+  createdAt: string;
+}
+
 export type QuestionType = "mcq" | "short_answer" | "python_program";
 
 export interface MCQQuestion {
@@ -42,6 +53,8 @@ export interface Assignment {
   description: string;
   questions: Question[];
   deadline: string;
+  targetYear: "1st Year" | "2nd Year";
+  targetSections: string[];
   createdBy: string;
   createdAt: string;
 }
@@ -51,10 +64,13 @@ export interface AssignmentSubmission {
   assignment_id: string;
   student_id: string;
   student_name: string;
-  rollNumber?: string;
+  student_roll_number?: string;
+  student_year?: string;
+  student_section?: string;
   answers: {
     [question_id: string]: {
       answer: string;
+      correct_answer?: string;
       marks_awarded: number;
       feedback: string;
       total_marks: number;

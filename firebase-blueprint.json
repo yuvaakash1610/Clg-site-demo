@@ -8,6 +8,7 @@
         "uid": { "type": "string", "description": "Firebase Auth UID" },
         "email": { "type": "string", "format": "email" },
         "name": { "type": "string" },
+        "rollNumber": { "type": "string", "description": "Student roll number" },
         "role": { "type": "string", "enum": ["teacher", "student"] },
         "createdAt": { "type": "string", "format": "date-time" }
       },

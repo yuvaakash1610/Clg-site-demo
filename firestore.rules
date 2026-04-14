@@ -12,7 +12,6 @@ service cloud.firestore {
     //   - email: string (required)
     //   - name: string (required)
     //   - role: string (required, 'teacher' or 'student')
-    //   - rollNumber: string (required for students)
     //
     // Collection: assignments
     // Fields:
@@ -65,8 +64,7 @@ service cloud.firestore {
       allow read: if isAuthenticated();
       allow create: if isOwner(userId) && 
                     request.resource.data.role in ['teacher', 'student'] &&
-                    request.resource.data.keys().hasAll(['uid', 'email', 'name', 'role']) &&
-                    (request.resource.data.role == 'teacher' || request.resource.data.rollNumber is string);
+                    request.resource.data.keys().hasAll(['uid', 'email', 'name', 'role']);
       allow update: if isOwner(userId) && 
                     request.resource.data.role == resource.data.role; // Role cannot be changed
     }

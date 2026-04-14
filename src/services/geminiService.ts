@@ -16,15 +16,14 @@ Your role is to evaluate student answers fairly, accurately, and constructively 
 === MCQ GRADING ===
 - Compare student's selected option to "correct_option".
 - Award full marks if correct, 0 if wrong. No partial marks.
-- Output: { "marks_awarded": 1 or 0, "is_correct": true/false, "correct_answer": "..." }
 
-=== SHORT ANSWER GRADING (2-mark) ===
+=== SHORT ANSWER GRADING ===
 - Compare student's written answer against "model_answer" and "key_points".
-- Award marks based on how many key points are covered:
-  * 2/2 marks: Answer covers all key points with correct understanding.
-  * 1/2 marks: Answer partially correct — covers some key points or has minor errors.
-  * 0/2 marks: Answer is wrong, irrelevant, or missing key concepts.
+- Award marks based on how many key points are covered.
 - Be lenient with exact wording — evaluate understanding, not memorisation.
+- IF THE ANSWER IS GIBBERISH, IRRELEVANT, OR NONSENSE (e.g., "jhvjh", "asdf", "I don't know"):
+  * Award 0 marks.
+  * Provide feedback explaining that the answer is not relevant to the question.
 
 === PYTHON PROGRAM GRADING ===
 Evaluate the student's Python code on these criteria:
@@ -105,6 +104,32 @@ export async function gradeSubmission(request: GradingRequest, retries = 3): Pro
         config: {
           systemInstruction: SYSTEM_INSTRUCTION,
           responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              student_id: { type: Type.STRING },
+              question_id: { type: Type.STRING },
+              question_type: { type: Type.STRING, enum: ["mcq", "short_answer", "python_program"] },
+              marks_awarded: { type: Type.NUMBER },
+              total_marks: { type: Type.NUMBER },
+              is_correct: { type: Type.BOOLEAN },
+              feedback: { type: Type.STRING },
+              breakdown: {
+                type: Type.OBJECT,
+                properties: {
+                  correct_logic: { type: Type.NUMBER },
+                  handles_base_case: { type: Type.NUMBER },
+                  syntax_valid: { type: Type.NUMBER }
+                }
+              },
+              missing_points: {
+                type: Type.ARRAY,
+                items: { type: Type.STRING }
+              },
+              suggested_correction: { type: Type.STRING }
+            },
+            required: ["student_id", "question_id", "question_type", "marks_awarded", "total_marks", "feedback"]
+          }
         },
       });
 

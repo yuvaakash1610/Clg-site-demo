@@ -14,9 +14,7 @@
 }
 
 @layer utilities {
-  .bg-college {
-    @apply bg-slate-50;
-  }
+  /* bg-college removed */
 }
 
 @layer components {
