@@ -9,10 +9,47 @@
         "email": { "type": "string", "format": "email" },
         "name": { "type": "string" },
         "rollNumber": { "type": "string", "description": "Student roll number" },
-        "role": { "type": "string", "enum": ["teacher", "student"] },
+        "role": { "type": "string", "enum": ["admin", "teacher", "student"] },
+        "year": { "type": "string" },
+        "section": { "type": "string" },
+        "department": { "type": "string" },
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["uid", "email", "name", "role"]
+    },
+    "Course": {
+      "title": "Course",
+      "description": "Academic course information",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "code": { "type": "string" },
+        "description": { "type": "string" },
+        "department": { "type": "string" },
+        "semester": { "type": "number" },
+        "credits": { "type": "number" },
+        "teacherUids": { "type": "array", "items": { "type": "string" } },
+        "studentUids": { "type": "array", "items": { "type": "string" } },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "title", "code", "department", "semester", "teacherUids", "studentUids", "createdAt"]
+    },
+    "LearningMaterial": {
+      "title": "LearningMaterial",
+      "description": "Study materials for a course",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "courseId": { "type": "string" },
+        "title": { "type": "string" },
+        "type": { "type": "string", "enum": ["pdf", "ppt", "video", "link"] },
+        "url": { "type": "string" },
+        "topic": { "type": "string" },
+        "releaseDate": { "type": "string", "format": "date-time" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "courseId", "title", "type", "url", "createdAt"]
     },
     "Assignment": {
       "title": "Assignment",
@@ -20,26 +57,77 @@
       "type": "object",
       "properties": {
         "id": { "type": "string" },
+        "courseId": { "type": "string" },
         "title": { "type": "string" },
         "description": { "type": "string" },
         "questions": { "type": "array", "items": { "$ref": "Question" } },
         "deadline": { "type": "string", "format": "date-time" },
+        "targetYear": { "type": "string" },
+        "targetSections": { "type": "array", "items": { "type": "string" } },
         "createdBy": { "type": "string", "description": "Teacher UID" },
         "createdAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["id", "title", "questions", "deadline", "createdBy", "createdAt"]
+      "required": ["id", "courseId", "title", "questions", "deadline", "createdBy", "createdAt"]
     },
-    "Question": {
-      "title": "Question",
-      "description": "Assessment question",
+    "Announcement": {
+      "title": "Announcement",
+      "description": "Course or global announcements",
       "type": "object",
       "properties": {
         "id": { "type": "string" },
-        "type": { "type": "string", "enum": ["mcq", "short_answer", "python_program"] },
-        "question": { "type": "string" },
-        "marks": { "type": "number" }
+        "courseId": { "type": "string" },
+        "title": { "type": "string" },
+        "content": { "type": "string" },
+        "authorUid": { "type": "string" },
+        "targetRoles": { "type": "array", "items": { "type": "string" } },
+        "createdAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["id", "type", "question"]
+      "required": ["id", "title", "content", "authorUid", "targetRoles", "createdAt"]
+    },
+    "DiscussionPost": {
+      "title": "DiscussionPost",
+      "description": "Forum posts for a course",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "courseId": { "type": "string" },
+        "authorUid": { "type": "string" },
+        "content": { "type": "string" },
+        "parentId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "courseId", "authorUid", "content", "createdAt"]
+    },
+    "TimetableEntry": {
+      "title": "TimetableEntry",
+      "description": "Schedule for a course",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "courseId": { "type": "string" },
+        "day": { "type": "string" },
+        "startTime": { "type": "string" },
+        "endTime": { "type": "string" },
+        "room": { "type": "string" },
+        "section": { "type": "string" },
+        "year": { "type": "string" }
+      },
+      "required": ["id", "courseId", "day", "startTime", "endTime", "room", "section", "year"]
+    },
+    "Notification": {
+      "title": "Notification",
+      "description": "User notifications",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userUid": { "type": "string" },
+        "title": { "type": "string" },
+        "message": { "type": "string" },
+        "type": { "type": "string" },
+        "read": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userUid", "title", "message", "type", "read", "createdAt"]
     },
     "AssignmentSubmission": {
       "title": "AssignmentSubmission",
@@ -56,12 +144,32 @@
         "timestamp": { "type": "string", "format": "date-time" }
       },
       "required": ["id", "assignment_id", "student_id", "student_name", "answers", "total_marks_awarded", "total_possible_marks", "timestamp"]
+    },
+    "Question": {
+      "title": "Question",
+      "description": "Assessment question",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "type": { "type": "string", "enum": ["mcq", "short_answer", "python_program"] },
+        "question": { "type": "string" },
+        "marks": { "type": "number" }
+      },
+      "required": ["id", "type", "question"]
     }
   },
   "firestore": {
     "/users/{uid}": {
       "schema": "User",
       "description": "User profiles"
+    },
+    "/courses/{courseId}": {
+      "schema": "Course",
+      "description": "Academic courses"
+    },
+    "/materials/{materialId}": {
+      "schema": "LearningMaterial",
+      "description": "Course study materials"
     },
     "/assignments/{assignmentId}": {
       "schema": "Assignment",
@@ -70,6 +178,22 @@
     "/submissions/{submissionId}": {
       "schema": "AssignmentSubmission",
       "description": "Student submissions for assignments"
+    },
+    "/announcements/{announcementId}": {
+      "schema": "Announcement",
+      "description": "Announcements"
+    },
+    "/discussions/{postId}": {
+      "schema": "DiscussionPost",
+      "description": "Discussion forum posts"
+    },
+    "/timetable/{entryId}": {
+      "schema": "TimetableEntry",
+      "description": "Class schedules"
+    },
+    "/notifications/{notificationId}": {
+      "schema": "Notification",
+      "description": "User notifications"
     }
   }
 }

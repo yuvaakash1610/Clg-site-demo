@@ -20,10 +20,28 @@ import {
   Lock,
   UserPlus,
   Linkedin,
-  Github
+  Github,
+  Calendar,
+  Bell,
+  MessageSquare,
+  Users,
+  FileUp,
+  ClipboardList,
+  LayoutDashboard,
+  ShieldCheck,
+  Heart,
+  Search,
+  Filter,
+  Clock,
+  MapPin,
+  Download,
+  ExternalLink,
+  MoreVertical,
+  Edit3
 } from "lucide-react";
 import { cn } from "@/src/lib/utils";
-import { Question, QuestionType, MCQQuestion, ShortAnswerQuestion, PythonQuestion, Assignment, AssignmentSubmission, User } from "./types";
+import { SUBJECTS, SUBJECTS_BY_YEAR } from "./constants";
+import { Question, QuestionType, MCQQuestion, ShortAnswerQuestion, PythonQuestion, Assignment, AssignmentSubmission, User, Course, LearningMaterial, Announcement, DiscussionPost, TimetableEntry, Notification as AppNotification } from "./types";
 import { gradeSubmission, GradingResponse, generateTestCases } from "./services/geminiService";
 import ReactMarkdown from "react-markdown";
 import { auth, db } from "./firebase";
@@ -32,8 +50,12 @@ import {
   signInWithEmailAndPassword, 
   createUserWithEmailAndPassword, 
   signOut,
-  User as FirebaseUser 
+  User as FirebaseUser,
+  getAuth
 } from "firebase/auth";
+import { initializeApp } from "firebase/app";
+// @ts-ignore
+import firebaseConfig from "../firebase-applet-config.json";
 import { 
   collection, 
   doc, 
@@ -45,6 +67,7 @@ import {
   orderBy, 
   addDoc, 
   deleteDoc,
+  updateDoc,
   where,
   Timestamp
 } from "firebase/firestore";
@@ -131,9 +154,16 @@ function AppContent() {
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [userData, setUserData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
-  const [view, setView] = useState<"landing" | "teacher" | "student">("landing");
+  const [view, setView] = useState<"landing" | "teacher" | "student" | "admin">("landing");
+  const [activeTab, setActiveTab] = useState("dashboard");
   const [assignments, setAssignments] = useState<Assignment[]>([]);
   const [submissions, setSubmissions] = useState<AssignmentSubmission[]>([]);
+  const [courses, setCourses] = useState<Course[]>([]);
+  const [materials, setMaterials] = useState<LearningMaterial[]>([]);
+  const [announcements, setAnnouncements] = useState<Announcement[]>([]);
+  const [notifications, setNotifications] = useState<AppNotification[]>([]);
+  const [timetable, setTimetable] = useState<TimetableEntry[]>([]);
+  const [allUsers, setAllUsers] = useState<User[]>([]);
   const [showAuth, setShowAuth] = useState<"login" | "register" | null>(null);
 
   // Auth Listener
@@ -144,7 +174,12 @@ function AppContent() {
         try {
           const userDoc = await getDoc(doc(db, "users", firebaseUser.uid));
           if (userDoc.exists()) {
-            setUserData(userDoc.data());
+            const data = userDoc.data();
+            setUserData(data);
+            // Default view based on role
+            if (data.role === "admin") setView("admin");
+            else if (data.role === "teacher") setView("teacher");
+            else if (data.role === "student") setView("student");
           }
         } catch (error) {
           console.error("Error fetching user data:", error);
@@ -158,15 +193,35 @@ function AppContent() {
     return () => unsubscribe();
   }, []);
 
-  // Assignments Listener
+  // Generic Listeners
   useEffect(() => {
     if (!user) return;
-    const q = query(collection(db, "assignments"), orderBy("createdAt", "desc"));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const as = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Assignment));
-      setAssignments(as);
-    }, (error) => handleFirestoreError(error, OperationType.LIST, "assignments"));
-    return () => unsubscribe();
+
+    const listeners = [
+      { coll: "assignments", setter: setAssignments, sort: ["createdAt", "desc"] },
+      { coll: "courses", setter: setCourses, sort: ["createdAt", "desc"] },
+      { coll: "materials", setter: setMaterials, sort: ["createdAt", "desc"] },
+      { coll: "announcements", setter: setAnnouncements, sort: ["createdAt", "desc"] },
+      { coll: "timetable", setter: setTimetable, sort: ["day", "asc"] }
+    ];
+
+    const unsubscribes = listeners.map(l => {
+      const q = query(collection(db, l.coll), orderBy(l.sort[0], l.sort[1] as any));
+      return onSnapshot(q, (snapshot) => {
+        l.setter(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as any)));
+      }, (error) => handleFirestoreError(error, OperationType.LIST, l.coll));
+    });
+
+    // Notifications Listener (User specific)
+    const notifQ = query(collection(db, "notifications"), where("userUid", "==", user.uid), orderBy("createdAt", "desc"));
+    const notifUnsub = onSnapshot(notifQ, (snapshot) => {
+      setNotifications(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as AppNotification)));
+    });
+
+    return () => {
+      unsubscribes.forEach(unsub => unsub());
+      notifUnsub();
+    };
   }, [user]);
 
   // Submissions Listener
@@ -174,7 +229,7 @@ function AppContent() {
     if (!user || !userData) return;
     const subRef = collection(db, "submissions");
     let q;
-    if (userData.role === "teacher") {
+    if (userData.role === "teacher" || userData.role === "admin") {
       q = query(subRef, orderBy("timestamp", "desc"));
     } else {
       q = query(subRef, where("student_id", "==", user.uid));
@@ -187,16 +242,55 @@ function AppContent() {
     return () => unsubscribe();
   }, [user, userData]);
 
+  // All Users Listener (Admin only)
+  useEffect(() => {
+    if (!user || !userData || userData.role !== "admin") return;
+    const q = query(collection(db, "users"), orderBy("createdAt", "desc"));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      setAllUsers(snapshot.docs.map(doc => ({ uid: doc.id, ...doc.data() } as User)));
+    }, (error) => handleFirestoreError(error, OperationType.LIST, "users"));
+    return () => unsubscribe();
+  }, [user, userData]);
+
   const addAssignment = async (a: any) => {
-    if (!user) return;
+    if (!user || !userData) return;
     try {
       await addDoc(collection(db, "assignments"), {
         ...a,
+        targetYear: userData.year, // Automatically set to teacher's year
         createdBy: user.uid,
         createdAt: new Date().toISOString()
       });
     } catch (error) {
       handleFirestoreError(error, OperationType.CREATE, "assignments");
+    }
+  };
+
+  const updateUserData = async (data: Partial<User>) => {
+    if (!user) return;
+    try {
+      await updateDoc(doc(db, "users", user.uid), data);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `users/${user.uid}`);
+    }
+  };
+
+  const addMaterial = async (m: any) => {
+    try {
+      await addDoc(collection(db, "materials"), {
+        ...m,
+        createdAt: new Date().toISOString()
+      });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, "materials");
+    }
+  };
+
+  const deleteMaterial = async (id: string) => {
+    try {
+      await deleteDoc(doc(db, "materials", id));
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, `materials/${id}`);
     }
   };
 
@@ -220,6 +314,66 @@ function AppContent() {
       });
     } catch (error) {
       handleFirestoreError(error, OperationType.CREATE, "submissions");
+    }
+  };
+
+  const addCourse = async (c: any) => {
+    try {
+      await addDoc(collection(db, "courses"), {
+        ...c,
+        createdAt: new Date().toISOString()
+      });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, "courses");
+    }
+  };
+
+  const addAnnouncement = async (a: any) => {
+    if (!user) return;
+    try {
+      await addDoc(collection(db, "announcements"), {
+        ...a,
+        authorUid: user.uid,
+        createdAt: new Date().toISOString()
+      });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, "announcements");
+    }
+  };
+
+  const addUser = async (u: any) => {
+    try {
+      // Use secondary app to create user without logging out current admin
+      const secondaryApp = initializeApp(firebaseConfig, 'Secondary');
+      const secondaryAuth = getAuth(secondaryApp);
+      const res = await createUserWithEmailAndPassword(secondaryAuth, u.email, u.password);
+      
+      const userPath = `users/${res.user.uid}`;
+      try {
+        await setDoc(doc(db, "users", res.user.uid), {
+          uid: res.user.uid,
+          email: u.email,
+          name: u.name,
+          role: u.role,
+          department: u.department || "",
+          createdAt: new Date().toISOString()
+        });
+      } catch (err) {
+        handleFirestoreError(err, OperationType.WRITE, userPath);
+      }
+      
+      await signOut(secondaryAuth);
+    } catch (error: any) {
+      console.error("Error adding user:", error);
+      let message = "Error adding user: " + error.message;
+      if (error.code === "auth/email-already-in-use") {
+        message = "This email address is already in use by another account.";
+      } else if (error.code === "auth/invalid-email") {
+        message = "The email address is badly formatted.";
+      } else if (error.code === "auth/weak-password") {
+        message = "The password must be at least 6 characters long.";
+      }
+      alert(message);
     }
   };
 
@@ -250,6 +404,18 @@ function AppContent() {
         <div className="flex items-center gap-2 sm:gap-4">
           {user ? (
             <>
+              {userData?.role === "admin" && (
+                <button 
+                  onClick={() => setView("admin")}
+                  className={cn(
+                    "px-3 sm:px-4 py-2 rounded-lg font-medium transition-all flex items-center gap-2 text-sm sm:text-base",
+                    view === "admin" ? "bg-primary text-white shadow-md" : "text-slate-600 hover:bg-slate-100"
+                  )}
+                >
+                  <ShieldCheck size={18} />
+                  <span className="hidden xs:inline">admin portal</span>
+                </button>
+              )}
               {userData?.role === "teacher" && (
                 <button 
                   onClick={() => setView("teacher")}
@@ -344,6 +510,16 @@ function AppContent() {
                   </motion.button>
                 </div>
               )}
+              {user && userData?.role === "admin" && (
+                <motion.button 
+                  whileHover={{ scale: 1.05, y: -2 }}
+                  whileTap={{ scale: 0.95 }}
+                  onClick={() => setView("admin")}
+                  className="px-8 py-4 bg-primary text-white rounded-2xl font-bold text-lg hover:bg-primary/90 transition-all shadow-xl shadow-primary/20"
+                >
+                  Go to admin portal
+                </motion.button>
+              )}
               {user && userData?.role === "teacher" && (
                 <motion.button 
                   whileHover={{ scale: 1.05, y: -2 }}
@@ -367,12 +543,32 @@ function AppContent() {
             </motion.div>
           )}
 
+          {view === "admin" && user && userData?.role === "admin" && (
+            <AdminPortal 
+              users={allUsers}
+              courses={courses}
+              onAddCourse={addCourse}
+              announcements={announcements}
+              onAddAnnouncement={addAnnouncement}
+              onAddUser={addUser}
+            />
+          )}
+
           {view === "teacher" && user && userData?.role === "teacher" && (
             <TeacherPortal 
               assignments={assignments} 
               submissions={submissions}
+              courses={courses}
+              materials={materials}
               onAdd={addAssignment}
               onDelete={deleteAssignment}
+              onAddMaterial={addMaterial}
+              onDeleteMaterial={deleteMaterial}
+              announcements={announcements}
+              onAddAnnouncement={addAnnouncement}
+              timetable={timetable}
+              userData={userData}
+              onUpdateUser={updateUserData}
             />
           )}
 
@@ -381,7 +577,11 @@ function AppContent() {
               assignments={assignments} 
               studentData={userData}
               onSubmission={saveSubmission}
-              submissions={submissions.filter(s => s.student_id === user.uid)}
+              submissions={submissions}
+              courses={courses}
+              materials={materials}
+              announcements={announcements}
+              timetable={timetable}
             />
           )}
         </AnimatePresence>
@@ -442,7 +642,7 @@ function AuthModal({ type, onClose, onSwitch }: { type: "login" | "register", on
   const [rollNumber, setRollNumber] = useState("");
   const [year, setYear] = useState<"1st Year" | "2nd Year">("1st Year");
   const [section, setSection] = useState("");
-  const [role, setRole] = useState<"teacher" | "student">("student");
+  const [role, setRole] = useState<"admin" | "teacher" | "student">("student");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -453,6 +653,9 @@ function AuthModal({ type, onClose, onSwitch }: { type: "login" | "register", on
     try {
       if (type === "register") {
         const res = await createUserWithEmailAndPassword(auth, email, password);
+        
+      const userPath = `users/${res.user.uid}`;
+      try {
         await setDoc(doc(db, "users", res.user.uid), {
           uid: res.user.uid,
           email,
@@ -463,6 +666,9 @@ function AuthModal({ type, onClose, onSwitch }: { type: "login" | "register", on
           role,
           createdAt: new Date().toISOString()
         });
+      } catch (err) {
+        handleFirestoreError(err, OperationType.WRITE, userPath);
+      }
       } else {
         await signInWithEmailAndPassword(auth, email, password);
       }
@@ -546,26 +752,16 @@ function AuthModal({ type, onClose, onSwitch }: { type: "login" | "register", on
                     </div>
                   </>
                 )}
-                <div className="flex bg-slate-100 p-1.5 rounded-2xl">
+                <div className="flex flex-wrap bg-slate-100 p-1.5 rounded-2xl gap-1">
                   <button
                     type="button"
                     onClick={() => setRole("student")}
                     className={cn(
-                      "flex-1 py-2.5 rounded-xl text-sm font-bold transition-all",
+                      "flex-1 min-w-[80px] py-2.5 rounded-xl text-xs font-bold transition-all",
                       role === "student" ? "bg-white text-primary shadow-sm" : "text-slate-500"
                     )}
                   >
                     Student
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setRole("teacher")}
-                    className={cn(
-                      "flex-1 py-2.5 rounded-xl text-sm font-bold transition-all",
-                      role === "teacher" ? "bg-white text-primary shadow-sm" : "text-slate-500"
-                    )}
-                  >
-                    Teacher
                   </button>
                 </div>
               </>
@@ -637,17 +833,364 @@ function AuthModal({ type, onClose, onSwitch }: { type: "login" | "register", on
   );
 }
 
+// --- Admin Portal ---
+
+function AdminPortal({ users, courses, onAddCourse, announcements, onAddAnnouncement, onAddUser }: { users: User[], courses: Course[], onAddCourse: (c: any) => void, announcements: Announcement[], onAddAnnouncement: (a: any) => void, onAddUser: (u: any) => void }) {
+  const [activeTab, setActiveTab] = useState("dashboard");
+  const [isAddingCourse, setIsAddingCourse] = useState(false);
+  const [isAddingAnnouncement, setIsAddingAnnouncement] = useState(false);
+  const [isAddingUser, setIsAddingUser] = useState(false);
+  const [userFilter, setUserFilter] = useState<string>("all");
+  const [targetRoles, setTargetRoles] = useState<string[]>(["student", "teacher"]);
+
+  const filteredUsers = users.filter(u => userFilter === "all" || u.role === userFilter);
+
+  return (
+    <div className="space-y-8">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-3xl font-bold text-slate-900">College Management</h2>
+          <p className="text-slate-500">Admin Control Center</p>
+        </div>
+        <div className="flex bg-slate-100 p-1 rounded-2xl">
+          {["dashboard", "courses", "users", "announcements"].map(t => (
+            <button
+              key={t}
+              onClick={() => setActiveTab(t)}
+              className={cn(
+                "px-4 py-2 rounded-xl text-sm font-bold capitalize transition-all",
+                activeTab === t ? "bg-white text-primary shadow-sm" : "text-slate-500 hover:text-slate-700"
+              )}
+            >
+              {t}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {activeTab === "dashboard" && (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <button 
+            onClick={() => setActiveTab("courses")}
+            className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm hover:shadow-md hover:border-primary/20 transition-all text-left group"
+          >
+            <div className="w-12 h-12 bg-blue-100 text-blue-600 rounded-2xl flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+              <BookOpen size={24} />
+            </div>
+            <h3 className="text-2xl font-bold text-slate-900">{courses.length}</h3>
+            <p className="text-slate-500 font-medium">Active Courses</p>
+          </button>
+          <button 
+            onClick={() => setActiveTab("users")}
+            className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm hover:shadow-md hover:border-primary/20 transition-all text-left group"
+          >
+            <div className="w-12 h-12 bg-purple-100 text-purple-600 rounded-2xl flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+              <Users size={24} />
+            </div>
+            <h3 className="text-2xl font-bold text-slate-900">{users.length}</h3>
+            <p className="text-slate-500 font-medium">Total Users</p>
+          </button>
+          <button 
+            onClick={() => setActiveTab("announcements")}
+            className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm hover:shadow-md hover:border-primary/20 transition-all text-left group"
+          >
+            <div className="w-12 h-12 bg-emerald-100 text-emerald-600 rounded-2xl flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+              <Bell size={24} />
+            </div>
+            <h3 className="text-2xl font-bold text-slate-900">{announcements.length}</h3>
+            <p className="text-slate-500 font-medium">Announcements</p>
+          </button>
+        </div>
+      )}
+
+      {activeTab === "users" && (
+        <div className="space-y-6">
+          <div className="flex items-center justify-between">
+            <h3 className="text-xl font-bold text-slate-800">User Management</h3>
+            <div className="flex items-center gap-4">
+              <div className="flex bg-slate-100 p-1 rounded-xl">
+                {["all", "student", "teacher", "admin"].map(f => (
+                  <button
+                    key={f}
+                    onClick={() => setUserFilter(f)}
+                    className={cn(
+                      "px-3 py-1.5 rounded-lg text-xs font-bold capitalize transition-all",
+                      userFilter === f ? "bg-white text-primary shadow-sm" : "text-slate-500 hover:text-slate-700"
+                    )}
+                  >
+                    {f}
+                  </button>
+                ))}
+              </div>
+              <button 
+                onClick={() => setIsAddingUser(true)}
+                className="px-4 py-2 bg-primary text-white rounded-xl font-bold flex items-center gap-2 hover:bg-primary/90 transition-all"
+              >
+                <Plus size={20} /> Add Staff
+              </button>
+            </div>
+          </div>
+          <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
+            <table className="w-full text-left">
+              <thead>
+                <tr className="bg-slate-50 border-b border-slate-200">
+                  <th className="px-6 py-4 text-xs font-bold uppercase tracking-wider text-slate-500">Name</th>
+                  <th className="px-6 py-4 text-xs font-bold uppercase tracking-wider text-slate-500">Role</th>
+                  <th className="px-6 py-4 text-xs font-bold uppercase tracking-wider text-slate-500">Email</th>
+                  <th className="px-6 py-4 text-xs font-bold uppercase tracking-wider text-slate-500">Details</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {filteredUsers.map(u => (
+                  <tr key={u.uid} className="hover:bg-slate-50 transition-colors">
+                    <td className="px-6 py-4 text-sm font-bold text-slate-800">{u.name}</td>
+                    <td className="px-6 py-4">
+                      <span className={cn(
+                        "px-2 py-1 text-[10px] font-bold rounded-lg uppercase",
+                        u.role === 'admin' ? "bg-purple-100 text-purple-600" :
+                        u.role === 'teacher' ? "bg-blue-100 text-blue-600" :
+                        u.role === 'student' ? "bg-emerald-100 text-emerald-600" :
+                        "bg-slate-100 text-slate-600"
+                      )}>
+                        {u.role}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4 text-sm text-slate-500">{u.email}</td>
+                    <td className="px-6 py-4 text-xs text-slate-400">
+                      {u.role === 'student' ? `${u.year} - Section ${u.section}` : u.department || "N/A"}
+                    </td>
+                  </tr>
+                ))}
+                {filteredUsers.length === 0 && (
+                  <tr>
+                    <td colSpan={4} className="px-6 py-12 text-center text-slate-400 italic">
+                      No users found matching the filter.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {activeTab === "announcements" && (
+        <div className="space-y-6">
+          <div className="flex items-center justify-between">
+            <h3 className="text-xl font-bold text-slate-800">System Announcements</h3>
+            <button 
+              onClick={() => setIsAddingAnnouncement(true)}
+              className="px-4 py-2 bg-primary text-white rounded-xl font-bold flex items-center gap-2 hover:bg-primary/90 transition-all"
+            >
+              <Plus size={20} /> New Announcement
+            </button>
+          </div>
+          <div className="grid grid-cols-1 gap-4">
+            {announcements.map(a => (
+              <div key={a.id} className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
+                <div className="flex items-center justify-between mb-4">
+                  <h4 className="font-bold text-lg text-slate-800">{a.title}</h4>
+                  <div className="flex gap-2">
+                    {a.targetRoles.map(r => (
+                      <span key={r} className="px-2 py-0.5 bg-slate-100 text-slate-500 text-[10px] font-bold rounded uppercase">{r}</span>
+                    ))}
+                  </div>
+                </div>
+                <p className="text-slate-600 text-sm">{a.content}</p>
+                <p className="text-[10px] text-slate-400 mt-4 font-bold uppercase">{new Date(a.createdAt).toLocaleString()}</p>
+              </div>
+            ))}
+            {announcements.length === 0 && (
+              <div className="text-center py-20 bg-slate-50 rounded-3xl border-2 border-dashed border-slate-200">
+                <p className="text-slate-400 font-medium">No announcements yet.</p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      <AnimatePresence>
+        {isAddingCourse && (
+          <div className="fixed inset-0 z-[110] flex items-center justify-center p-6 bg-slate-900/40 backdrop-blur-sm">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-white w-full max-w-lg rounded-3xl shadow-2xl overflow-hidden"
+            >
+              <div className="p-6 border-b border-slate-100 flex items-center justify-between">
+                <h3 className="text-xl font-bold">Add New Course</h3>
+                <button onClick={() => setIsAddingCourse(false)} className="p-2 text-slate-400 hover:bg-slate-100 rounded-full">
+                  <XCircle size={24} />
+                </button>
+              </div>
+              <form onSubmit={(e) => {
+                e.preventDefault();
+                const formData = new FormData(e.currentTarget);
+                onAddCourse({
+                  title: formData.get("title"),
+                  code: formData.get("code"),
+                  description: formData.get("description"),
+                  department: formData.get("department"),
+                  semester: Number(formData.get("semester")),
+                  credits: Number(formData.get("credits")),
+                  teacherUids: [],
+                  studentUids: []
+                });
+                setIsAddingCourse(false);
+              }} className="p-6 space-y-4">
+                <input required name="title" placeholder="Course Title" className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-primary" />
+                <div className="grid grid-cols-2 gap-4">
+                  <input required name="code" placeholder="Course Code (e.g. CS101)" className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-primary" />
+                  <input required name="department" placeholder="Department" className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-primary" />
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <input required name="semester" type="number" placeholder="Semester" className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-primary" />
+                  <input required name="credits" type="number" placeholder="Credits" className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-primary" />
+                </div>
+                <textarea name="description" placeholder="Description" className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-primary min-h-[100px]" />
+                <button type="submit" className="w-full py-4 bg-primary text-white rounded-2xl font-bold shadow-lg shadow-primary/20">Create Course</button>
+              </form>
+            </motion.div>
+          </div>
+        )}
+
+        {isAddingAnnouncement && (
+          <div className="fixed inset-0 z-[110] flex items-center justify-center p-6 bg-slate-900/40 backdrop-blur-sm">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-white w-full max-w-lg rounded-3xl shadow-2xl overflow-hidden"
+            >
+              <div className="p-6 border-b border-slate-100 flex items-center justify-between">
+                <h3 className="text-xl font-bold">New System Announcement</h3>
+                <button onClick={() => setIsAddingAnnouncement(false)} className="p-2 text-slate-400 hover:bg-slate-100 rounded-full">
+                  <XCircle size={24} />
+                </button>
+              </div>
+              <form onSubmit={(e) => {
+                e.preventDefault();
+                const formData = new FormData(e.currentTarget);
+                onAddAnnouncement({
+                  title: formData.get("title"),
+                  content: formData.get("content"),
+                  targetRoles,
+                  courseId: "system",
+                  createdAt: new Date().toISOString()
+                });
+                setIsAddingAnnouncement(false);
+              }} className="p-6 space-y-4">
+                <input required name="title" placeholder="Announcement Title" className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-primary" />
+                <textarea required name="content" placeholder="Announcement Content" className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-primary min-h-[150px]" />
+                <div className="p-4 bg-slate-50 rounded-xl">
+                  <p className="text-xs font-bold text-slate-400 uppercase mb-2">Target Audience</p>
+                  <div className="flex flex-wrap gap-4">
+                    {["student", "teacher"].map(r => (
+                      <label key={r} className="flex items-center gap-2 cursor-pointer">
+                        <input 
+                          type="checkbox" 
+                          checked={targetRoles.includes(r)}
+                          onChange={(e) => {
+                            if (e.target.checked) setTargetRoles([...targetRoles, r]);
+                            else setTargetRoles(targetRoles.filter(tr => tr !== r));
+                          }}
+                          className="w-4 h-4 rounded border-slate-300 text-primary focus:ring-primary"
+                        />
+                        <span className="text-sm font-bold text-slate-600 capitalize">{r}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+                <button type="submit" className="w-full py-4 bg-primary text-white rounded-2xl font-bold shadow-lg shadow-primary/20">Post Announcement</button>
+              </form>
+            </motion.div>
+          </div>
+        )}
+
+        {isAddingUser && (
+          <div className="fixed inset-0 z-[110] flex items-center justify-center p-6 bg-slate-900/40 backdrop-blur-sm">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-white w-full max-w-lg rounded-3xl shadow-2xl overflow-hidden"
+            >
+              <div className="p-6 border-b border-slate-100 flex items-center justify-between">
+                <h3 className="text-xl font-bold">Add New Staff Member</h3>
+                <button onClick={() => setIsAddingUser(false)} className="p-2 text-slate-400 hover:bg-slate-100 rounded-full">
+                  <XCircle size={24} />
+                </button>
+              </div>
+              <form onSubmit={(e) => {
+                e.preventDefault();
+                const formData = new FormData(e.currentTarget);
+                onAddUser({
+                  name: formData.get("name"),
+                  email: formData.get("email"),
+                  password: formData.get("password"),
+                  role: formData.get("role"),
+                  department: formData.get("department")
+                });
+                setIsAddingUser(false);
+              }} className="p-6 space-y-4">
+                <input required name="name" placeholder="Full Name" className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-primary" />
+                <input required name="email" type="email" placeholder="Email Address" className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-primary" />
+                <input required name="password" type="password" placeholder="Initial Password" className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-primary" />
+                <div className="grid grid-cols-2 gap-4">
+                  <select required name="role" className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-primary bg-white">
+                    <option value="teacher">Teacher</option>
+                    <option value="admin">Admin</option>
+                  </select>
+                  <input name="department" placeholder="Department" className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-primary" />
+                </div>
+                <div className="p-4 bg-blue-50 rounded-xl text-xs text-blue-600 font-medium">
+                  Note: This will create a new authentication account and a user profile. The user can then log in with these credentials.
+                </div>
+                <button type="submit" className="w-full py-4 bg-primary text-white rounded-2xl font-bold shadow-lg shadow-primary/20">Create Staff Account</button>
+              </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
 // --- Teacher Portal Components ---
 
-function TeacherPortal({ assignments, submissions = [], onAdd, onDelete }: { assignments: Assignment[], submissions: AssignmentSubmission[], onAdd: (a: any) => void, onDelete: (id: string) => void }) {
-  const [tab, setTab] = useState<"assignments" | "gradebook">("assignments");
+function TeacherPortal({ assignments, submissions = [], courses, materials = [], onAdd, onDelete, onAddMaterial, onDeleteMaterial, announcements, onAddAnnouncement, timetable, userData, onUpdateUser }: { 
+  assignments: Assignment[], 
+  submissions: AssignmentSubmission[], 
+  courses: Course[],
+  materials: LearningMaterial[],
+  onAdd: (a: any) => void, 
+  onDelete: (id: string) => void,
+  onAddMaterial: (m: any) => void,
+  onDeleteMaterial: (id: string) => void,
+  announcements: Announcement[],
+  onAddAnnouncement: (a: any) => void,
+  timetable: TimetableEntry[],
+  userData: User,
+  onUpdateUser: (data: Partial<User>) => void
+}) {
+  const [tab, setTab] = useState<"assignments" | "materials" | "gradebook" | "announcements">("assignments");
   const [isAdding, setIsAdding] = useState(false);
+  const [isAddingMaterial, setIsAddingMaterial] = useState(false);
+  const [isAddingAnnouncement, setIsAddingAnnouncement] = useState(false);
   const [gradebookMode, setGradebookMode] = useState<"summary" | "detailed">("summary");
   const [selectedStudent, setSelectedStudent] = useState<string | null>(null);
   const [yearFilter, setYearFilter] = useState<"All" | "1st Year" | "2nd Year">("All");
   const [sectionFilter, setSectionFilter] = useState<string>("All");
+  const [isSettingUp, setIsSettingUp] = useState(!userData.setupComplete || !userData.subjects || userData.subjects.length === 0);
+  const [setupYear, setSetupYear] = useState<"1st Year" | "2nd Year">("1st Year");
 
   const SECTIONS = "ABCDEFGHIJKLMNOP".split("");
+
+  // Filter assignments based on teacher's subjects and year
+  const filteredAssignments = assignments.filter(a => 
+    a.createdBy === userData.uid || (userData.subjects?.includes(a.subject) && a.targetYear === userData.year)
+  );
 
   const studentSummary = (submissions || []).reduce((acc: any, sub) => {
     const studentId = sub.student_id;
@@ -697,29 +1240,27 @@ function TeacherPortal({ assignments, submissions = [], onAdd, onDelete }: { ass
           <h2 className="text-3xl font-bold text-slate-900">Learning Management System</h2>
           <p className="text-slate-500">Welcome to learning</p>
         </div>
-        <div className="flex gap-2">
-          <motion.button 
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-            onClick={() => setTab("assignments")}
-            className={cn(
-              "px-4 py-2 rounded-xl font-bold transition-all",
-              tab === "assignments" ? "bg-primary/10 text-primary" : "text-slate-500 hover:bg-slate-100"
-            )}
-          >
-            Assignments
-          </motion.button>
-          <motion.button 
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-            onClick={() => setTab("gradebook")}
-            className={cn(
-              "px-4 py-2 rounded-xl font-bold transition-all",
-              tab === "gradebook" ? "bg-primary/10 text-primary" : "text-slate-500 hover:bg-slate-100"
-            )}
-          >
-            Gradebook
-          </motion.button>
+        <div className="flex flex-wrap gap-2">
+          {[
+            { id: "assignments", label: "Assignments", icon: BookOpen },
+            { id: "materials", label: "Materials", icon: FileText },
+            { id: "gradebook", label: "Gradebook", icon: GraduationCap },
+            { id: "announcements", label: "Announcements", icon: Bell }
+          ].map(t => (
+            <motion.button 
+              key={t.id}
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+              onClick={() => setTab(t.id as any)}
+              className={cn(
+                "px-4 py-2 rounded-xl font-bold transition-all flex items-center gap-2",
+                tab === t.id ? "bg-primary/10 text-primary" : "text-slate-500 hover:bg-slate-100"
+              )}
+            >
+              <t.icon size={18} />
+              {t.label}
+            </motion.button>
+          ))}
         </div>
       </div>
 
@@ -738,13 +1279,13 @@ function TeacherPortal({ assignments, submissions = [], onAdd, onDelete }: { ass
           </div>
 
           <div className="grid gap-4">
-            {assignments.length === 0 ? (
+            {filteredAssignments.length === 0 ? (
               <div className="text-center py-20 bg-white rounded-3xl border-2 border-dashed border-slate-200">
                 <FileText className="mx-auto text-slate-300 mb-4" size={48} />
                 <p className="text-slate-500 font-medium">No assignments created yet.</p>
               </div>
             ) : (
-              assignments.map((a) => (
+              filteredAssignments.map((a) => (
                 <div key={a.id} className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm hover:shadow-md transition-shadow group flex items-start justify-between">
                   <div className="flex flex-col sm:flex-row gap-4">
                     <div className="w-12 h-12 rounded-xl flex items-center justify-center bg-primary/10 text-primary shrink-0">
@@ -789,7 +1330,57 @@ function TeacherPortal({ assignments, submissions = [], onAdd, onDelete }: { ass
             )}
           </div>
         </div>
-      ) : (
+      ) : tab === "materials" ? (
+        <div className="space-y-6">
+          <div className="flex justify-end">
+            <motion.button 
+              whileHover={{ scale: 1.05, x: -5 }}
+              whileTap={{ scale: 0.95 }}
+              onClick={() => setIsAddingMaterial(true)}
+              className="w-full sm:w-auto px-5 py-2.5 bg-primary text-white rounded-xl font-semibold hover:bg-primary/90 transition-all flex items-center justify-center gap-2 shadow-lg shadow-primary/20"
+            >
+              <Plus size={20} />
+              Add Material
+            </motion.button>
+          </div>
+
+          <div className="grid gap-4">
+            {materials.filter(m => userData.subjects?.includes(m.subject)).length === 0 ? (
+              <div className="text-center py-20 bg-white rounded-3xl border-2 border-dashed border-slate-200">
+                <FileText className="mx-auto text-slate-300 mb-4" size={48} />
+                <p className="text-slate-500 font-medium">No materials added yet.</p>
+              </div>
+            ) : (
+              materials.filter(m => userData.subjects?.includes(m.subject)).map((m) => (
+                <div key={m.id} className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm hover:shadow-md transition-shadow group flex items-start justify-between">
+                  <div className="flex flex-col sm:flex-row gap-4">
+                    <div className="w-12 h-12 rounded-xl flex items-center justify-center bg-primary/10 text-primary shrink-0">
+                      <FileText size={24} />
+                    </div>
+                    <div>
+                      <div className="flex flex-wrap items-center gap-2 mb-1">
+                        <span className="text-xs font-bold uppercase tracking-wider text-slate-400">{m.type}</span>
+                        <span className="text-xs font-bold px-2 py-0.5 bg-blue-50 text-blue-600 rounded-full">
+                          {m.subject}
+                        </span>
+                      </div>
+                      <h3 className="font-semibold text-lg text-slate-800">{m.title}</h3>
+                      <p className="text-sm text-slate-500">{m.description}</p>
+                    </div>
+                  </div>
+                  <button 
+                    type="button"
+                    onClick={() => onDeleteMaterial(m.id)}
+                    className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all"
+                  >
+                    <Trash2 size={20} />
+                  </button>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      ) : tab === "gradebook" ? (
         <div className="flex flex-col gap-6">
           <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
             <div className="flex bg-slate-100 p-1 rounded-2xl">
@@ -964,6 +1555,34 @@ function TeacherPortal({ assignments, submissions = [], onAdd, onDelete }: { ass
             </div>
           </div>
         </div>
+      ) : (
+        <div className="space-y-6">
+          <div className="flex items-center justify-between">
+            <h3 className="text-xl font-bold text-slate-800">Announcements</h3>
+            <button 
+              onClick={() => setIsAddingAnnouncement(true)}
+              className="px-4 py-2 bg-primary text-white rounded-xl font-bold flex items-center gap-2 hover:bg-primary/90 transition-all"
+            >
+              <Plus size={20} /> New Announcement
+            </button>
+          </div>
+          <div className="grid grid-cols-1 gap-4">
+            {announcements.map(a => (
+              <div key={a.id} className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
+                <div className="flex items-center justify-between mb-4">
+                  <h4 className="font-bold text-lg text-slate-800">{a.title}</h4>
+                  <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">{new Date(a.createdAt).toLocaleString()}</span>
+                </div>
+                <p className="text-slate-600 text-sm whitespace-pre-wrap">{a.content}</p>
+                <div className="mt-4 flex gap-2">
+                  {a.targetRoles.map(r => (
+                    <span key={r} className="px-2 py-1 bg-slate-100 text-slate-500 text-[10px] font-bold rounded-lg uppercase">{r}</span>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
       )}
 
       <AnimatePresence>
@@ -1044,6 +1663,151 @@ function TeacherPortal({ assignments, submissions = [], onAdd, onDelete }: { ass
       </AnimatePresence>
 
       <AnimatePresence>
+        {isAddingAnnouncement && (
+          <div className="fixed inset-0 z-[110] flex items-center justify-center p-6 bg-slate-900/40 backdrop-blur-sm">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-white w-full max-w-lg rounded-3xl shadow-2xl overflow-hidden"
+            >
+              <div className="p-6 border-b border-slate-100 flex items-center justify-between">
+                <h3 className="text-xl font-bold">New Announcement</h3>
+                <button onClick={() => setIsAddingAnnouncement(false)} className="p-2 text-slate-400 hover:bg-slate-100 rounded-full">
+                  <XCircle size={24} />
+                </button>
+              </div>
+              <form onSubmit={(e) => {
+                e.preventDefault();
+                const formData = new FormData(e.currentTarget);
+                onAddAnnouncement({
+                  title: formData.get("title"),
+                  content: formData.get("content"),
+                  targetRoles: ["student"],
+                  courseId: formData.get("courseId") || null
+                });
+                setIsAddingAnnouncement(false);
+              }} className="p-6 space-y-4">
+                <input required name="title" placeholder="Announcement Title" className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-primary" />
+                <textarea required name="content" placeholder="Content..." className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-primary min-h-[150px]" />
+                <select name="courseId" className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-primary">
+                  <option value="">Global Announcement</option>
+                  {courses.map(c => <option key={c.id} value={c.id}>{c.title}</option>)}
+                </select>
+                <button type="submit" className="w-full py-4 bg-primary text-white rounded-2xl font-bold shadow-lg shadow-primary/20">Post Announcement</button>
+              </form>
+            </motion.div>
+          </div>
+        )}
+
+        {isSettingUp && (
+          <div className="fixed inset-0 z-[150] flex items-center justify-center p-6 bg-slate-900/60 backdrop-blur-md">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              className="bg-white w-full max-w-md rounded-3xl shadow-2xl p-8"
+            >
+              <h3 className="text-2xl font-bold text-slate-900 mb-2">Teacher Setup</h3>
+              <p className="text-slate-500 mb-6">Please configure your teaching preferences.</p>
+              
+              <form onSubmit={(e) => {
+                e.preventDefault();
+                const formData = new FormData(e.currentTarget);
+                const year = formData.get("year") as any;
+                const subjects = Array.from(formData.getAll("subjects")) as string[];
+                
+                if (subjects.length === 0) {
+                  alert("Please select at least one subject.");
+                  return;
+                }
+
+                onUpdateUser({
+                  year,
+                  subjects,
+                  setupComplete: true
+                });
+                setIsSettingUp(false);
+              }} className="space-y-6">
+                <div className="space-y-2">
+                  <label className="text-sm font-bold text-slate-700">Which year are you teaching?</label>
+                  <select 
+                    name="year" 
+                    required 
+                    value={setupYear}
+                    onChange={(e) => setSetupYear(e.target.value as any)}
+                    className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-primary"
+                  >
+                    <option value="1st Year">1st Year</option>
+                    <option value="2nd Year">2nd Year</option>
+                  </select>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-sm font-bold text-slate-700">Which subjects are you taking?</label>
+                  <div className="max-h-48 overflow-y-auto border border-slate-200 rounded-xl p-4 space-y-2">
+                    {SUBJECTS_BY_YEAR[setupYear].map(s => (
+                      <label key={s} className="flex items-center gap-3 cursor-pointer group">
+                        <input type="checkbox" name="subjects" value={s} className="w-5 h-5 rounded border-slate-300 text-primary focus:ring-primary" />
+                        <span className="text-sm text-slate-600 group-hover:text-slate-900 transition-colors">{s}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+
+                <button type="submit" className="w-full py-4 bg-primary text-white rounded-2xl font-bold shadow-lg shadow-primary/20 hover:bg-primary/90 transition-all">
+                  Complete Setup
+                </button>
+              </form>
+            </motion.div>
+          </div>
+        )}
+
+        {isAddingMaterial && (
+          <div className="fixed inset-0 z-[110] flex items-center justify-center p-6 bg-slate-900/40 backdrop-blur-sm">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-white w-full max-w-lg rounded-3xl shadow-2xl overflow-hidden"
+            >
+              <div className="p-6 border-b border-slate-100 flex items-center justify-between">
+                <h3 className="text-xl font-bold">Add Learning Material</h3>
+                <button onClick={() => setIsAddingMaterial(false)} className="p-2 text-slate-400 hover:bg-slate-100 rounded-full">
+                  <XCircle size={24} />
+                </button>
+              </div>
+              <form onSubmit={(e) => {
+                e.preventDefault();
+                const formData = new FormData(e.currentTarget);
+                onAddMaterial({
+                  title: formData.get("title"),
+                  description: formData.get("description"),
+                  subject: formData.get("subject"),
+                  type: formData.get("type"),
+                  url: formData.get("url"),
+                  courseId: "general"
+                });
+                setIsAddingMaterial(false);
+              }} className="p-6 space-y-4">
+                <input required name="title" placeholder="Material Title" className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-primary" />
+                <textarea required name="description" placeholder="Description..." className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-primary" />
+                <select name="subject" required className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-primary">
+                  <option value="" disabled>Select a subject</option>
+                  {userData.subjects?.map(s => <option key={s} value={s}>{s}</option>)}
+                </select>
+                <select name="type" required className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-primary">
+                  <option value="pdf">PDF Document</option>
+                  <option value="ppt">PowerPoint</option>
+                  <option value="video">Video Link</option>
+                  <option value="link">External Link</option>
+                </select>
+                <input required name="url" placeholder="URL (e.g., Google Drive link)" className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-primary" />
+                <button type="submit" className="w-full py-4 bg-primary text-white rounded-2xl font-bold shadow-lg shadow-primary/20">Add Material</button>
+              </form>
+            </motion.div>
+          </div>
+        )}
+
         {isAdding && (
           <div className="fixed inset-0 z-[60] flex items-center justify-center p-6 bg-slate-900/40 backdrop-blur-sm">
             <motion.div 
@@ -1064,6 +1828,7 @@ function TeacherPortal({ assignments, submissions = [], onAdd, onDelete }: { ass
               
               <div className="p-6 overflow-y-auto flex-1">
                 <AssignmentCreator 
+                  subjects={userData.subjects || []}
                   onCancel={() => setIsAdding(false)} 
                   onSave={(a) => {
                     onAdd(a);
@@ -1079,10 +1844,17 @@ function TeacherPortal({ assignments, submissions = [], onAdd, onDelete }: { ass
   );
 }
 
-function AssignmentCreator({ onSave, onCancel }: { onSave: (a: any) => void, onCancel: () => void }) {
+function AssignmentCreator({ onSave, onCancel, subjects }: { onSave: (a: any) => void, onCancel: () => void, subjects: string[] }) {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
+  const [subject, setSubject] = useState(subjects[0] || "");
   const [deadline, setDeadline] = useState("");
+
+  useEffect(() => {
+    if (subjects.length > 0 && !subject) {
+      setSubject(subjects[0]);
+    }
+  }, [subjects]);
   const [targetYear, setTargetYear] = useState<"1st Year" | "2nd Year">("1st Year");
   const [targetSections, setTargetSections] = useState<string[]>([]);
   const [questions, setQuestions] = useState<Question[]>([]);
@@ -1121,6 +1893,7 @@ function AssignmentCreator({ onSave, onCancel }: { onSave: (a: any) => void, onC
     onSave({
       title,
       description,
+      subject,
       deadline,
       targetYear,
       targetSections,
@@ -1143,6 +1916,21 @@ function AssignmentCreator({ onSave, onCancel }: { onSave: (a: any) => void, onC
                 className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-primary outline-none transition-all"
                 placeholder="e.g. Python Basics Quiz"
               />
+            </div>
+            <div>
+              <label className="block text-sm font-bold text-slate-700 mb-1">Subject</label>
+              <div className="relative">
+                <select
+                  required
+                  value={subject}
+                  onChange={e => setSubject(e.target.value)}
+                  className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-primary outline-none transition-all appearance-none bg-white font-medium text-slate-700"
+                >
+                  <option value="" disabled>Select a subject</option>
+                  {subjects.map(s => <option key={s} value={s}>{s}</option>)}
+                </select>
+                <ChevronRight className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 rotate-90 pointer-events-none" size={16} />
+              </div>
             </div>
             <div>
               <label className="block text-sm font-bold text-slate-700 mb-1">Description</label>
@@ -1604,8 +2392,19 @@ function QuestionForm({ type, onCancel, onSave }: { type: QuestionType, onCancel
 
 // --- Student Portal Components ---
 
-function StudentPortal({ assignments, studentData, onSubmission, submissions = [] }: { assignments: Assignment[], studentData: User, onSubmission: (s: any) => void, submissions: AssignmentSubmission[] }) {
+function StudentPortal({ assignments, studentData, onSubmission, submissions = [], courses, announcements, timetable, materials = [] }: { 
+  assignments: Assignment[], 
+  studentData: User, 
+  onSubmission: (s: any) => void, 
+  submissions: AssignmentSubmission[],
+  courses: Course[],
+  announcements: Announcement[],
+  timetable: TimetableEntry[],
+  materials: LearningMaterial[]
+}) {
+  const [activeTab, setActiveTab] = useState("dashboard");
   const [selectedAssignment, setSelectedAssignment] = useState<Assignment | null>(null);
+  const [selectedSubject, setSelectedSubject] = useState<string | null>(null);
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
   const [answers, setAnswers] = useState<{[key: string]: string}>({});
   const [gradingResults, setGradingResults] = useState<{[key: string]: GradingResponse}>({});
@@ -1825,357 +2624,400 @@ sys.stdout = io.StringIO()
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      className="grid grid-cols-1 md:grid-cols-3 gap-8"
+      className="space-y-8"
     >
-      <div className="md:col-span-1 space-y-4">
-        <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm">
-          <div className="flex items-center gap-3 mb-6">
-            <div className="w-10 h-10 bg-primary/10 text-primary rounded-xl flex items-center justify-center">
-              <BookOpen size={20} />
-            </div>
-            <h3 className="font-bold text-lg">Assignments</h3>
-          </div>
-          <div className="space-y-2">
-            {assignments.filter(a => {
-              const sub = submissions.find(s => s.assignment_id === a.id);
-              const overdue = new Date(a.deadline) < new Date();
-              const matchesYear = a.targetYear === studentData.year;
-              const matchesSection = !a.targetSections || a.targetSections.length === 0 || a.targetSections.includes(studentData.section || "");
-              // Show if (not overdue AND matches year AND matches section) OR if already submitted
-              return (matchesYear && matchesSection && !overdue) || sub;
-            }).map((a) => {
-              const sub = submissions.find(s => s.assignment_id === a.id);
-              const overdue = new Date(a.deadline) < new Date();
-              return (
-                <motion.button
-                  key={a.id}
-                  whileHover={{ scale: 1.02, x: 5 }}
-                  whileTap={{ scale: 0.98 }}
-                  onClick={() => {
-                    setSelectedAssignment(a);
-                    setCurrentQuestionIndex(0);
-                    setAnswers({});
-                    setGradingResults({});
-                  }}
-                  className={cn(
-                    "w-full text-left p-4 rounded-2xl border transition-all group",
-                    selectedAssignment?.id === a.id 
-                      ? "bg-primary/10 border-primary/20 shadow-sm" 
-                      : "border-transparent hover:bg-slate-50"
-                  )}
-                >
-                  <div className="flex items-center justify-between mb-1">
-                    <div className="flex items-center gap-2">
-                      <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
-                        {a.questions.length} Questions
-                      </span>
-                      {sub && <CheckCircle2 size={12} className="text-emerald-500" />}
-                      {!sub && overdue && <AlertCircle size={12} className="text-red-500" />}
-                    </div>
-                    <ChevronRight size={14} className={cn(
-                      "transition-transform",
-                      selectedAssignment?.id === a.id ? "translate-x-1 text-primary" : "text-slate-300 group-hover:translate-x-1"
-                    )} />
-                  </div>
-                  <p className={cn(
-                    "font-semibold text-sm line-clamp-1",
-                    selectedAssignment?.id === a.id ? "text-primary" : "text-slate-700"
-                  )}>{a.title}</p>
-                  <p className="text-[10px] text-slate-400 mt-1">
-                    Due: {new Date(a.deadline).toLocaleString()}
-                  </p>
-                </motion.button>
-              );
-            })}
-          </div>
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-3xl font-bold text-slate-900">Student Portal</h2>
+          <p className="text-slate-500">Welcome back, {studentData.name}</p>
         </div>
-
-        <div className="bg-gradient-to-br from-primary to-primary/80 p-6 rounded-3xl text-white shadow-xl shadow-primary/20">
-          <div className="flex items-center gap-3 mb-4">
-            <UserIcon size={20} />
-            <span className="font-bold">Student Profile</span>
-          </div>
-          <div className="space-y-1">
-            <p className="text-primary-foreground/80 text-sm">Name: {studentData.name}</p>
-            <p className="text-primary-foreground/80 text-sm">Year: {studentData.year}</p>
-            <p className="text-primary-foreground/80 text-sm">Section: {studentData.section}</p>
-            <p className="text-lg font-bold">Learning Portal</p>
-          </div>
+        <div className="flex bg-slate-100 p-1 rounded-2xl">
+          {[
+            { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
+            { id: "courses", label: "Courses", icon: BookOpen },
+            { id: "announcements", label: "Announcements", icon: Bell }
+          ].map(t => (
+            <button
+              key={t.id}
+              onClick={() => setActiveTab(t.id)}
+              className={cn(
+                "px-4 py-2 rounded-xl text-sm font-bold flex items-center gap-2 transition-all",
+                activeTab === t.id ? "bg-white text-primary shadow-sm" : "text-slate-500 hover:text-slate-700"
+              )}
+            >
+              <t.icon size={16} />
+              <span className="hidden md:inline">{t.label}</span>
+            </button>
+          ))}
         </div>
       </div>
 
-      <div className="md:col-span-2 space-y-6">
-        {selectedAssignment ? (
+      {activeTab === "dashboard" && (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+          <div className="lg:col-span-2 space-y-6">
+            <div className="bg-gradient-to-br from-primary to-blue-600 p-8 rounded-[2rem] text-white shadow-xl shadow-primary/20 relative overflow-hidden">
+              <div className="relative z-10">
+                <h3 className="text-2xl font-bold mb-2">Ready to learn, {studentData.name}?</h3>
+                <p className="text-blue-100 max-w-md">Check your course subjects to find assignments and learning materials uploaded by your teachers.</p>
+                <button 
+                  onClick={() => setActiveTab("courses")}
+                  className="mt-6 px-6 py-2.5 bg-white text-primary rounded-xl font-bold hover:bg-blue-50 transition-all flex items-center gap-2"
+                >
+                  Go to Courses
+                  <ChevronRight size={18} />
+                </button>
+              </div>
+              <div className="absolute top-0 right-0 w-64 h-64 bg-white/10 rounded-full -translate-y-1/2 translate-x-1/2 blur-3xl" />
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm">
+                <div className="w-10 h-10 rounded-xl bg-emerald-100 text-emerald-600 flex items-center justify-center mb-4">
+                  <CheckCircle2 size={20} />
+                </div>
+                <h4 className="text-2xl font-bold text-slate-800">{(submissions || []).length}</h4>
+                <p className="text-sm text-slate-500">Completed Submissions</p>
+              </div>
+              <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm">
+                <div className="w-10 h-10 rounded-xl bg-blue-100 text-blue-600 flex items-center justify-center mb-4">
+                  <BookOpen size={20} />
+                </div>
+                <h4 className="text-2xl font-bold text-slate-800">{SUBJECTS_BY_YEAR[studentData.year as keyof typeof SUBJECTS_BY_YEAR]?.length || 0}</h4>
+                <p className="text-sm text-slate-500">Enrolled Subjects</p>
+              </div>
+            </div>
+          </div>
           <div className="space-y-6">
-            {existingSubmission ? (
-              <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm text-center">
-                <CheckCircle2 size={48} className="mx-auto text-emerald-500 mb-4" />
-                <h3 className="text-2xl font-bold text-slate-900 mb-2">Assignment Completed</h3>
-                <p className="text-slate-500 mb-6">You have already submitted this assignment.</p>
-                <div className="p-6 bg-primary/10 rounded-2xl inline-block text-left">
-                  <p className="text-sm font-bold text-primary mb-1">Your Total Score:</p>
-                  <p className="text-3xl font-black text-primary">
-                    {existingSubmission.total_marks_awarded} / {existingSubmission.total_possible_marks}
-                  </p>
+            <h3 className="text-xl font-bold text-slate-800">Recent Announcements</h3>
+            <div className="space-y-4">
+              {announcements.filter(a => a.targetRoles.includes("student")).slice(0, 3).map(a => (
+                <div key={a.id} className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
+                  <h5 className="font-bold text-sm text-slate-800">{a.title}</h5>
+                  <p className="text-xs text-slate-500 mt-1 line-clamp-2">{a.content}</p>
                 </div>
-                <div className="mt-8 space-y-4 text-left">
-                  {existingSubmission.answers && Object.entries(existingSubmission.answers).map(([qid, ans]: [string, any]) => (
-                    <div key={qid} className="p-4 rounded-xl border border-slate-100 bg-slate-50">
-                      <div className="flex justify-between items-start mb-2">
-                        <span className="text-[10px] font-bold uppercase text-slate-400">{ans.question_type?.replace("_", " ") || "QUESTION"}</span>
-                        <span className="font-bold text-primary">{ans.marks_awarded} / {ans.total_marks}</span>
-                      </div>
-                      <p className="font-semibold text-slate-800 text-sm mb-2">{ans.question_title}</p>
-                      <div className="space-y-2 mb-3">
-                        <div className="p-2 bg-white rounded-lg border border-slate-100 text-xs">
-                          <p className="text-[10px] font-bold uppercase text-slate-400 mb-1">Your Answer</p>
-                          <p className="text-slate-700 font-medium">{ans.answer || <span className="italic text-slate-400">No answer provided</span>}</p>
-                        </div>
-                        {ans.marks_awarded < ans.total_marks && (
-                          <div className="p-2 bg-emerald-50 rounded-lg border border-emerald-100 text-xs">
-                            <p className="text-[10px] font-bold uppercase text-emerald-400 mb-1">Correct Answer</p>
-                            <p className="text-emerald-700 font-medium">{ans.correct_answer || "N/A"}</p>
-                          </div>
-                        )}
-                      </div>
-                      <p className="text-xs text-slate-500 italic bg-white p-2 rounded border border-slate-100">{ans.feedback}</p>
-                    </div>
-                  ))}
-                </div>
-                <button 
-                  onClick={() => setSelectedAssignment(null)}
-                  className="mt-8 px-6 py-2 bg-slate-100 text-slate-600 rounded-xl font-bold hover:bg-slate-200 transition-all"
-                >
-                  Back to Assignments
-                </button>
-              </div>
-            ) : isOverdue ? (
-              <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm text-center">
-                <AlertCircle size={48} className="mx-auto text-red-500 mb-4" />
-                <h3 className="text-2xl font-bold text-slate-900 mb-2">Deadline Passed</h3>
-                <p className="text-slate-500 mb-6">This assignment is no longer accepting submissions.</p>
-                <button 
-                  onClick={() => setSelectedAssignment(null)}
-                  className="px-6 py-2 bg-slate-100 text-slate-600 rounded-xl font-bold hover:bg-slate-200 transition-all"
-                >
-                  Back to Assignments
-                </button>
-              </div>
-            ) : currentQuestion ? (
-              <motion.div 
-                key={currentQuestion.id}
-                initial={{ opacity: 0, x: 20 }}
-                animate={{ opacity: 1, x: 0 }}
-                className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm"
-              >
-                <div className="flex items-center justify-between mb-6">
-                  <div className="flex items-center gap-2">
-                    <span className="px-3 py-1 bg-primary/10 text-primary text-xs font-bold rounded-full uppercase tracking-wider">
-                      {currentQuestion.type.replace("_", " ")}
-                    </span>
-                    <span className="text-slate-400 text-xs font-medium">• {currentQuestion.type === "python_program" ? currentQuestion.total_marks : currentQuestion.marks} Marks</span>
-                  </div>
-                  <span className="text-xs font-bold text-slate-400">Question {currentQuestionIndex + 1} of {selectedAssignment.questions.length}</span>
-                </div>
+              ))}
+              {announcements.filter(a => a.targetRoles.includes("student")).length === 0 && (
+                <p className="text-sm text-slate-400 italic">No announcements yet.</p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
-                {submissionStatus && (
-                  <motion.div 
-                    initial={{ opacity: 0, y: -10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className={cn(
-                      "mb-6 p-4 rounded-2xl flex items-center gap-3 font-bold text-sm",
-                      submissionStatus.type === 'success' ? "bg-emerald-50 text-emerald-600 border border-emerald-100" : "bg-red-50 text-red-600 border border-red-100"
+      {activeTab === "courses" && (
+        <div className="space-y-6">
+          {!selectedSubject ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {SUBJECTS_BY_YEAR[studentData.year as keyof typeof SUBJECTS_BY_YEAR]?.map(s => (
+                <button
+                  key={s}
+                  onClick={() => setSelectedSubject(s)}
+                  className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm hover:shadow-xl hover:border-primary/20 hover:-translate-y-1 transition-all text-left group"
+                >
+                  <div className="w-14 h-14 rounded-2xl bg-primary/10 text-primary flex items-center justify-center mb-6 group-hover:scale-110 transition-transform">
+                    <BookOpen size={28} />
+                  </div>
+                  <h4 className="font-bold text-xl text-slate-800 mb-2 group-hover:text-primary transition-colors">{s}</h4>
+                  <p className="text-sm text-slate-500">View notes, materials, and assignments for this subject.</p>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div className="space-y-8">
+              <div className="flex items-center justify-between">
+                <button 
+                  onClick={() => setSelectedSubject(null)}
+                  className="flex items-center gap-2 text-slate-500 hover:text-primary font-bold transition-all"
+                >
+                  <ChevronRight className="rotate-180" size={20} />
+                  Back to Subjects
+                </button>
+                <h3 className="text-2xl font-bold text-slate-900">{selectedSubject}</h3>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                <div className="space-y-6">
+                  <h4 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+                    <FileText size={20} className="text-primary" />
+                    Learning Materials
+                  </h4>
+                  <div className="grid gap-4">
+                    {materials.filter(m => m.subject === selectedSubject).map(m => (
+                      <a 
+                        key={m.id} 
+                        href={m.url} 
+                        target="_blank" 
+                        rel="noopener noreferrer"
+                        className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm hover:shadow-md transition-all flex items-center justify-between group"
+                      >
+                        <div className="flex items-center gap-4">
+                          <div className="w-10 h-10 rounded-xl bg-slate-100 text-slate-500 flex items-center justify-center group-hover:bg-primary/10 group-hover:text-primary transition-colors">
+                            <FileText size={20} />
+                          </div>
+                          <div>
+                            <h5 className="font-bold text-slate-800">{m.title}</h5>
+                            <p className="text-xs text-slate-400">{m.type.toUpperCase()}</p>
+                          </div>
+                        </div>
+                        <ChevronRight size={18} className="text-slate-300 group-hover:text-primary transition-colors" />
+                      </a>
+                    ))}
+                    {materials.filter(m => m.subject === selectedSubject).length === 0 && (
+                      <p className="text-sm text-slate-400 italic py-8 text-center bg-slate-50 rounded-2xl border-2 border-dashed border-slate-200">No materials available for this subject yet.</p>
                     )}
-                  >
-                    {submissionStatus.type === 'success' ? <CheckCircle2 size={20} /> : <AlertCircle size={20} />}
-                    {submissionStatus.message}
-                  </motion.div>
-                )}
-                
-                <h2 className="text-2xl font-bold text-slate-900 mb-8 leading-tight">
-                  {currentQuestion.question}
-                </h2>
-
-                {currentQuestion.type === "mcq" && (
-                  <div className="grid gap-3">
-                    {currentQuestion.options.map((opt, i) => {
-                      const label = String.fromCharCode(65 + i);
-                      return (
-                        <motion.button
-                          key={i}
-                          whileHover={{ scale: 1.01, x: 5 }}
-                          whileTap={{ scale: 0.99 }}
-                          onClick={() => setAnswers({ ...answers, [currentQuestion.id]: label })}
-                          className={cn(
-                            "flex items-center gap-4 p-4 rounded-2xl border-2 transition-all text-left",
-                            answers[currentQuestion.id] === label 
-                              ? "bg-primary/5 border-primary text-primary" 
-                              : "border-slate-100 hover:border-slate-200 text-slate-700"
-                          )}
-                        >
-                          <span className={cn(
-                            "w-10 h-10 flex items-center justify-center rounded-xl font-bold transition-all",
-                            answers[currentQuestion.id] === label ? "bg-primary text-white" : "bg-slate-100 text-slate-500"
-                          )}>
-                            {label}
-                          </span>
-                          <span className="font-medium">{opt}</span>
-                        </motion.button>
-                      );
-                    })}
                   </div>
-                )}
-
-                {currentQuestion.type === "short_answer" && (
-                  <textarea
-                    value={answers[currentQuestion.id] || ""}
-                    onChange={(e) => setAnswers({ ...answers, [currentQuestion.id]: e.target.value })}
-                    className="w-full min-h-[200px] p-6 rounded-2xl border-2 border-slate-100 focus:border-primary outline-none transition-all text-lg leading-relaxed"
-                    placeholder="Type your answer here..."
-                  />
-                )}
-
-                {currentQuestion.type === "python_program" && (
-                  <div className="space-y-6">
-                    <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200">
-                      <h4 className="text-sm font-bold text-slate-700 mb-3 flex items-center gap-2">
-                        <ListChecks size={16} />
-                        Visible Test Cases
-                      </h4>
-                      <div className="grid gap-2">
-                        {currentQuestion.test_cases.map((tc, i) => (
-                          <div key={i} className="bg-white p-3 rounded-xl border border-slate-100 text-xs">
-                            <div className="flex justify-between mb-1">
-                              <span className="font-bold text-slate-400 uppercase tracking-wider">Test Case {i + 1}</span>
-                            </div>
-                            <div className="grid grid-cols-2 gap-4">
-                              <div>
-                                <p className="text-slate-400 mb-1">Input:</p>
-                                <code className="bg-slate-50 px-2 py-1 rounded block">{tc.input || "(none)"}</code>
+                </div>
+                <div className="space-y-6">
+                  <h4 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+                    <GraduationCap size={20} className="text-primary" />
+                    Subject Assignments
+                  </h4>
+                  <div className="grid gap-4">
+                    {assignments
+                      .filter(a => a.subject === selectedSubject && a.targetYear === studentData.year && a.targetSections?.includes(studentData.section))
+                      .map(a => {
+                        const sub = (submissions || []).find(s => s.assignment_id === a.id);
+                        return (
+                          <div key={a.id} className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex items-center justify-between group">
+                            <div className="flex items-center gap-4">
+                              <div className="w-10 h-10 rounded-xl bg-primary/10 text-primary flex items-center justify-center">
+                                <FileText size={20} />
                               </div>
                               <div>
-                                <p className="text-slate-400 mb-1">Expected Output:</p>
-                                <code className="bg-slate-50 px-2 py-1 rounded block">{tc.expected}</code>
+                                <h5 className="font-bold text-slate-800">{a.title}</h5>
+                                <p className="text-xs text-slate-400">Deadline: {new Date(a.deadline).toLocaleDateString()}</p>
                               </div>
                             </div>
+                            {sub ? (
+                              <span className="px-3 py-1 bg-emerald-100 text-emerald-600 text-[10px] font-bold rounded-lg uppercase">Completed</span>
+                            ) : (
+                              <button 
+                                onClick={() => setSelectedAssignment(a)}
+                                className="px-4 py-2 bg-primary text-white rounded-xl text-xs font-bold hover:bg-primary/90 transition-all"
+                              >
+                                Start
+                              </button>
+                            )}
                           </div>
-                        ))}
+                        );
+                      })}
+                    {assignments.filter(a => a.subject === selectedSubject && a.targetYear === studentData.year && a.targetSections?.includes(studentData.section)).length === 0 && (
+                      <p className="text-sm text-slate-400 italic py-8 text-center bg-slate-50 rounded-2xl border-2 border-dashed border-slate-200">No assignments for this subject yet.</p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {activeTab === "announcements" && (
+        <div className="grid grid-cols-1 gap-4">
+          {announcements.filter(a => a.targetRoles.includes("student")).map(a => (
+            <div key={a.id} className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
+              <div className="flex items-center justify-between mb-4">
+                <h4 className="font-bold text-lg text-slate-800">{a.title}</h4>
+                <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">{new Date(a.createdAt).toLocaleString()}</span>
+              </div>
+              <p className="text-slate-600 text-sm whitespace-pre-wrap">{a.content}</p>
+            </div>
+          ))}
+          {announcements.filter(a => a.targetRoles.includes("student")).length === 0 && (
+            <div className="text-center py-20 bg-slate-50 rounded-3xl border-2 border-dashed border-slate-200">
+              <p className="text-slate-400 font-medium">No announcements yet.</p>
+            </div>
+          )}
+        </div>
+      )}
+
+      <AnimatePresence>
+        {selectedAssignment && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-slate-900/40 backdrop-blur-sm">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-white w-full max-w-4xl h-[90vh] rounded-3xl shadow-2xl overflow-hidden flex flex-col"
+            >
+              <div className="p-6 border-b border-slate-100 flex items-center justify-between shrink-0">
+                <div>
+                  <h3 className="text-xl font-bold">{selectedAssignment.title}</h3>
+                  <p className="text-sm text-slate-500">{selectedAssignment.description}</p>
+                </div>
+                <button onClick={() => setSelectedAssignment(null)} className="p-2 text-slate-400 hover:bg-slate-100 rounded-full">
+                  <XCircle size={24} />
+                </button>
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-8">
+                {existingSubmission ? (
+                  <div className="max-w-2xl mx-auto text-center">
+                    <div className="w-20 h-20 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center mx-auto mb-6">
+                      <CheckCircle2 size={40} />
+                    </div>
+                    <h3 className="text-2xl font-bold text-slate-900 mb-2">Assignment Submitted</h3>
+                    <p className="text-slate-500 mb-8">You have already completed this assignment.</p>
+                    <div className="bg-slate-50 p-6 rounded-2xl mb-8">
+                      <p className="text-sm font-bold text-slate-400 uppercase tracking-widest mb-2">Final Score</p>
+                      <p className="text-4xl font-black text-primary">
+                        {existingSubmission.total_marks_awarded} / {existingSubmission.total_possible_marks}
+                      </p>
+                    </div>
+                    <div className="space-y-4 text-left">
+                      {existingSubmission.answers && Object.entries(existingSubmission.answers).map(([qid, ans]: [string, any]) => (
+                        <div key={qid} className="p-4 rounded-xl border border-slate-100 bg-white">
+                          <div className="flex justify-between items-start mb-2">
+                            <span className="text-[10px] font-bold uppercase text-slate-400">{ans.question_type?.replace("_", " ") || "QUESTION"}</span>
+                            <span className="font-bold text-primary">{ans.marks_awarded} / {ans.total_marks}</span>
+                          </div>
+                          <p className="font-semibold text-slate-800 text-sm mb-2">{ans.question_title}</p>
+                          <p className="text-xs text-slate-500 italic bg-slate-50 p-2 rounded border border-slate-100">{ans.feedback}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : isOverdue ? (
+                  <div className="max-w-md mx-auto text-center py-12">
+                    <AlertCircle size={48} className="mx-auto text-red-500 mb-4" />
+                    <h3 className="text-2xl font-bold text-slate-900 mb-2">Deadline Passed</h3>
+                    <p className="text-slate-500">This assignment is no longer accepting submissions.</p>
+                  </div>
+                ) : currentQuestion ? (
+                  <div className="max-w-3xl mx-auto">
+                    <div className="flex items-center justify-between mb-8">
+                      <div className="flex items-center gap-2">
+                        <span className="px-3 py-1 bg-primary/10 text-primary text-xs font-bold rounded-full uppercase tracking-wider">
+                          {currentQuestion.type.replace("_", " ")}
+                        </span>
+                        <span className="text-slate-400 text-xs font-medium">• {currentQuestion.type === "python_program" ? currentQuestion.total_marks : currentQuestion.marks} Marks</span>
                       </div>
+                      <span className="text-xs font-bold text-slate-400">Question {currentQuestionIndex + 1} of {selectedAssignment.questions.length}</span>
                     </div>
 
-                    <div className="bg-slate-900 rounded-2xl overflow-hidden">
-                      <div className="flex items-center justify-between px-4 py-2 bg-slate-800 border-b border-slate-700">
-                        <div className="flex gap-1.5">
-                          <div className="w-3 h-3 rounded-full bg-red-500" />
-                          <div className="w-3 h-3 rounded-full bg-amber-500" />
-                          <div className="w-3 h-3 rounded-full bg-emerald-500" />
-                        </div>
-                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">solution.py</span>
+                    {submissionStatus && (
+                      <div className={cn(
+                        "mb-6 p-4 rounded-2xl flex items-center gap-3 font-bold text-sm",
+                        submissionStatus.type === 'success' ? "bg-emerald-50 text-emerald-600 border border-emerald-100" : "bg-red-50 text-red-600 border border-red-100"
+                      )}>
+                        {submissionStatus.type === 'success' ? <CheckCircle2 size={20} /> : <AlertCircle size={20} />}
+                        {submissionStatus.message}
                       </div>
+                    )}
+                    
+                    <h2 className="text-2xl font-bold text-slate-900 mb-8 leading-tight">
+                      {currentQuestion.question}
+                    </h2>
+
+                    {currentQuestion.type === "mcq" && (
+                      <div className="grid gap-3">
+                        {currentQuestion.options.map((opt, i) => {
+                          const label = String.fromCharCode(65 + i);
+                          return (
+                            <button
+                              key={i}
+                              onClick={() => setAnswers({ ...answers, [currentQuestion.id]: label })}
+                              className={cn(
+                                "flex items-center gap-4 p-4 rounded-2xl border-2 transition-all text-left",
+                                answers[currentQuestion.id] === label 
+                                  ? "bg-primary/5 border-primary text-primary" 
+                                  : "border-slate-100 hover:border-slate-200 text-slate-700"
+                              )}
+                            >
+                              <span className={cn(
+                                "w-10 h-10 flex items-center justify-center rounded-xl font-bold transition-all",
+                                answers[currentQuestion.id] === label ? "bg-primary text-white" : "bg-slate-100 text-slate-500"
+                              )}>
+                                {label}
+                              </span>
+                              <span className="font-medium">{opt}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    {currentQuestion.type === "short_answer" && (
                       <textarea
                         value={answers[currentQuestion.id] || ""}
                         onChange={(e) => setAnswers({ ...answers, [currentQuestion.id]: e.target.value })}
-                        className="w-full min-h-[300px] p-6 bg-transparent text-slate-100 font-mono text-sm outline-none resize-none leading-relaxed"
-                        placeholder="# Write your Python code here..."
-                        spellCheck={false}
+                        className="w-full min-h-[200px] p-6 rounded-2xl border-2 border-slate-100 focus:border-primary outline-none transition-all text-lg leading-relaxed"
+                        placeholder="Type your answer here..."
                       />
-                    </div>
-                    <div className="flex justify-end">
-                      <button
-                        disabled={runningTests || !answers[currentQuestion.id]}
-                        onClick={runPythonTests}
-                        className="px-4 py-2 bg-slate-800 text-white rounded-xl text-sm font-bold hover:bg-slate-700 transition-all flex items-center gap-2"
-                      >
-                        {runningTests ? "Running..." : "Run & Test Code"}
-                      </button>
-                    </div>
-                    {testResults && (
-                      <div className="space-y-2 p-4 bg-slate-50 rounded-2xl border border-slate-100">
-                        <h4 className="text-sm font-bold text-slate-700 mb-2">Test Results</h4>
-                        {testResults.map((res, i) => (
-                          <div key={i} className={cn(
-                            "p-3 rounded-xl border text-xs space-y-2",
-                            res.passed ? "bg-emerald-50 border-emerald-100 text-emerald-700" : "bg-red-50 border-red-100 text-red-700"
-                          )}>
-                            <div className="flex justify-between items-center font-bold">
-                              <span>Test Case {i + 1}</span>
-                              <span className={cn(
-                                "px-2 py-0.5 rounded-full text-[10px]",
-                                res.passed ? "bg-emerald-200" : "bg-red-200"
-                              )}>{res.passed ? "PASSED" : "FAILED"}</span>
-                            </div>
-                            {!res.passed && (
-                              <div className="grid grid-cols-2 gap-2 opacity-80">
-                                <div>
-                                  <p className="mb-1">Expected:</p>
-                                  <code className="block bg-white/50 p-1 rounded">{res.expected}</code>
-                                </div>
-                                <div>
-                                  <p className="mb-1">Actual:</p>
-                                  <code className="block bg-white/50 p-1 rounded">{res.actual || "(no output)"}</code>
-                                </div>
+                    )}
+
+                    {currentQuestion.type === "python_program" && (
+                      <div className="space-y-6">
+                        <div className="bg-slate-900 rounded-2xl overflow-hidden">
+                          <textarea
+                            value={answers[currentQuestion.id] || ""}
+                            onChange={(e) => setAnswers({ ...answers, [currentQuestion.id]: e.target.value })}
+                            className="w-full min-h-[300px] p-6 bg-transparent text-slate-100 font-mono text-sm outline-none resize-none leading-relaxed"
+                            placeholder="# Write your Python code here..."
+                            spellCheck={false}
+                          />
+                        </div>
+                        <div className="flex justify-end">
+                          <button
+                            disabled={runningTests || !answers[currentQuestion.id]}
+                            onClick={runPythonTests}
+                            className="px-4 py-2 bg-slate-800 text-white rounded-xl text-sm font-bold hover:bg-slate-700 transition-all flex items-center gap-2"
+                          >
+                            {runningTests ? "Running..." : "Run & Test Code"}
+                          </button>
+                        </div>
+                        {testResults && (
+                          <div className="space-y-2 p-4 bg-slate-50 rounded-2xl border border-slate-100">
+                            <h4 className="text-sm font-bold text-slate-700 mb-2">Test Results</h4>
+                            {testResults.map((res, i) => (
+                              <div key={i} className={cn(
+                                "p-3 rounded-xl border text-xs flex justify-between items-center",
+                                res.passed ? "bg-emerald-50 border-emerald-100 text-emerald-700" : "bg-red-50 border-red-100 text-red-700"
+                              )}>
+                                <span>Test Case {i + 1}</span>
+                                <span className="font-bold">{res.passed ? "PASSED" : "FAILED"}</span>
                               </div>
-                            )}
+                            ))}
                           </div>
-                        ))}
+                        )}
                       </div>
                     )}
-                  </div>
-                )}
 
-                <div className="mt-8 pt-8 border-t border-slate-100 flex justify-between items-center">
-                  <div className="flex gap-2">
-                    <motion.button
-                      whileHover={{ scale: 1.05 }}
-                      whileTap={{ scale: 0.95 }}
-                      onClick={handlePrev}
-                      disabled={currentQuestionIndex === 0}
-                      className="px-4 py-2 border border-slate-200 rounded-xl text-sm font-bold text-slate-600 disabled:opacity-50"
-                    >
-                      Previous
-                    </motion.button>
-                    <motion.button
-                      whileHover={{ scale: 1.05 }}
-                      whileTap={{ scale: 0.95 }}
-                      onClick={handleNext}
-                      disabled={currentQuestionIndex === selectedAssignment.questions.length - 1}
-                      className="px-4 py-2 border border-slate-200 rounded-xl text-sm font-bold text-slate-600 disabled:opacity-50"
-                    >
-                      Next
-                    </motion.button>
-                  </div>
+                    <div className="mt-8 pt-8 border-t border-slate-100 flex justify-between items-center">
+                      <div className="flex gap-2">
+                        <button
+                          onClick={handlePrev}
+                          disabled={currentQuestionIndex === 0}
+                          className="px-4 py-2 border border-slate-200 rounded-xl text-sm font-bold text-slate-600 disabled:opacity-50"
+                        >
+                          Previous
+                        </button>
+                        <button
+                          onClick={handleNext}
+                          disabled={currentQuestionIndex === selectedAssignment.questions.length - 1}
+                          className="px-4 py-2 border border-slate-200 rounded-xl text-sm font-bold text-slate-600 disabled:opacity-50"
+                        >
+                          Next
+                        </button>
+                      </div>
 
-                  <div className="flex gap-2">
-                    {currentQuestionIndex === selectedAssignment.questions.length - 1 && (
-                      <motion.button
-                        whileHover={{ scale: 1.05 }}
-                        whileTap={{ scale: 0.95 }}
-                        disabled={isSubmitting}
-                        onClick={handleSubmitAssignment}
-                        className="px-6 py-2 bg-primary text-white rounded-xl text-sm font-bold hover:bg-primary/90 shadow-lg shadow-primary/20"
-                      >
-                        {isSubmitting ? "Grading & Submitting..." : "Finish Assignment"}
-                      </motion.button>
-                    )}
+                      {currentQuestionIndex === selectedAssignment.questions.length - 1 && (
+                        <button
+                          disabled={isSubmitting}
+                          onClick={handleSubmitAssignment}
+                          className="px-6 py-2 bg-primary text-white rounded-xl text-sm font-bold hover:bg-primary/90 shadow-lg shadow-primary/20"
+                        >
+                          {isSubmitting ? "Submitting..." : "Finish Assignment"}
+                        </button>
+                      )}
+                    </div>
                   </div>
-                </div>
-                
-                {/* Manual AI Grading display removed to restrict it to submission only */}
-              </motion.div>
-            ) : null}
-          </div>
-        ) : (
-          <div className="h-full flex flex-col items-center justify-center py-20 bg-white rounded-3xl border border-slate-200 border-dashed">
-            <div className="w-20 h-20 bg-slate-50 rounded-full flex items-center justify-center text-slate-300 mb-6">
-              <BookOpen size={40} />
-            </div>
-            <h3 className="text-xl font-bold text-slate-800 mb-2">Select an Assignment</h3>
-            <p className="text-slate-500 text-center max-w-xs">
-              Choose an assignment from the sidebar to start your attempt.
-            </p>
+                ) : null}
+              </div>
+            </motion.div>
           </div>
         )}
-      </div>
+      </AnimatePresence>
     </motion.div>
   );
 }

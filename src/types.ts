@@ -2,10 +2,81 @@ export interface User {
   uid: string;
   email: string;
   name: string;
-  role: "teacher" | "student";
+  role: "admin" | "teacher" | "student";
   rollNumber?: string;
   year?: "1st Year" | "2nd Year";
   section?: string;
+  department?: string;
+  setupComplete?: boolean;
+  subjects?: string[];
+  createdAt: string;
+}
+
+export interface Course {
+  id: string;
+  title: string;
+  code: string;
+  description: string;
+  department: string;
+  semester: number;
+  credits: number;
+  syllabusUrl?: string;
+  teacherUids: string[];
+  studentUids: string[];
+  createdAt: string;
+}
+
+export interface LearningMaterial {
+  id: string;
+  courseId: string;
+  subject: string;
+  title: string;
+  description: string;
+  type: "pdf" | "ppt" | "video" | "link";
+  url: string;
+  topic: string;
+  releaseDate: string; // For drip content
+  createdAt: string;
+}
+
+export interface Announcement {
+  id: string;
+  courseId?: string; // Global if null
+  title: string;
+  content: string;
+  authorUid: string;
+  targetRoles: ("student" | "teacher")[];
+  createdAt: string;
+}
+
+export interface DiscussionPost {
+  id: string;
+  courseId: string;
+  authorUid: string;
+  authorName: string;
+  content: string;
+  parentId?: string; // For replies
+  createdAt: string;
+}
+
+export interface TimetableEntry {
+  id: string;
+  courseId: string;
+  day: "Monday" | "Tuesday" | "Wednesday" | "Thursday" | "Friday" | "Saturday";
+  startTime: string;
+  endTime: string;
+  room: string;
+  section: string;
+  year: string;
+}
+
+export interface Notification {
+  id: string;
+  userUid: string;
+  title: string;
+  message: string;
+  type: "assignment" | "announcement" | "grade";
+  read: boolean;
   createdAt: string;
 }
 
@@ -49,8 +120,10 @@ export type Question = MCQQuestion | ShortAnswerQuestion | PythonQuestion;
 
 export interface Assignment {
   id: string;
+  courseId: string;
   title: string;
   description: string;
+  subject: string;
   questions: Question[];
   deadline: string;
   targetYear: "1st Year" | "2nd Year";
